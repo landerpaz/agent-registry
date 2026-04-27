@@ -129,14 +129,16 @@ CREATE TABLE agent_cards (
     health_status       VARCHAR(20) NOT NULL DEFAULT 'unknown'
                         CHECK (health_status IN ('healthy', 'not_healthy', 'unknown')),
     health_checked_at   TIMESTAMPTZ,
+    a2a_compliant       BOOLEAN NOT NULL DEFAULT FALSE,  -- Indicates if the agent is compliant with A2A standard
     created_by          VARCHAR(255) NOT NULL,   -- Okta user sub/ID
     updated_by          VARCHAR(255),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at          TIMESTAMPTZ,             -- Soft delete timestamp
 
-    -- Unique constraint: agent_card_id + version must be unique (across all rows, not just active)
-    CONSTRAINT uq_agent_card_id_version UNIQUE (agent_card_id, version)
+    -- Unique constraint: name + version must be unique (across all rows, not just active)
+    -- This allows the same agent (same name) with different versions
+    CONSTRAINT uq_name_version UNIQUE (name, version)
 );
 
 -- Indexes for fast lookup
@@ -144,6 +146,7 @@ CREATE INDEX idx_agent_cards_status ON agent_cards(status) WHERE deleted_at IS N
 CREATE INDEX idx_agent_cards_name ON agent_cards(name) WHERE deleted_at IS NULL;
 CREATE INDEX idx_agent_cards_agent_card_id ON agent_cards(agent_card_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_agent_cards_health ON agent_cards(health_status) WHERE deleted_at IS NULL;
+CREATE INDEX idx_agent_cards_a2a_compliant ON agent_cards(a2a_compliant) WHERE deleted_at IS NULL;
 CREATE INDEX idx_agent_cards_skills ON agent_cards USING GIN ((card_data -> 'skills'));
 CREATE INDEX idx_agent_cards_tags ON agent_cards USING GIN ((card_data -> 'skills' -> 'tags'));
 CREATE INDEX idx_agent_cards_created_by ON agent_cards(created_by) WHERE deleted_at IS NULL;
@@ -280,6 +283,7 @@ class AgentCardModel(Base):
     status = Column(String(20), nullable=False, default="active")
     health_status = Column(String(20), nullable=False, default="unknown")
     health_checked_at = Column(DateTime(timezone=True), nullable=True)
+    a2a_compliant = Column(Boolean, nullable=False, default=False)  # Indicates if the agent is compliant with A2A standard
     created_by = Column(String(255), nullable=False)
     updated_by = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -287,7 +291,7 @@ class AgentCardModel(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("agent_card_id", "version", name="uq_agent_card_id_version"),
+        UniqueConstraint("name", "version", name="uq_name_version"),
     )
 ```
 
@@ -353,6 +357,7 @@ class AgentCardResponse(BaseModel):
     card_data: dict = Field(alias="cardData")        # The full A2A Agent Card JSON
     status: str
     health_status: str = Field(alias="healthStatus")
+    a2a_compliant: bool = Field(alias="a2aCompliant")  # Indicates if the agent is compliant with A2A standard
     created_by: str = Field(alias="createdBy")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
@@ -424,7 +429,7 @@ All endpoints return **camelCase JSON** via Pydantic alias serialization.
 - **Logic**:
   1. Validate request body via Pydantic
   2. Generate `agent_card_id` from `name`: lowercase, strip leading/trailing spaces, replace all whitespace sequences with a single hyphen — e.g. `"Recipe Agent"` → `"recipe-agent"`. Use a helper `def slugify(name: str) -> str` in `services/agent_card_service.py`.
-  3. Check for duplicate `agent_card_id + version` (the unique key); return `OperationResponse` with `operationStatus: "failed"` if it already exists (regardless of `deleted_at` — a soft-deleted record still occupies the slot)
+  3. Check for duplicate `name + version` (the unique key); return `OperationResponse` with `operationStatus: "failed"` if it already exists (regardless of `deleted_at` — a soft-deleted record still occupies the slot)
   4. Insert into DB with `status=active`, `created_by=current_user.sub`, `agent_card_id=<slug>`
   5. Publish event to Redis: `{ "event": "agent_card_created", "agentId": "...", "agentName": "...", "agentCardId": "...", "cardData": {...} }`
   6. Return `OperationResponse` with `operationStatus: "success"`
@@ -724,7 +729,7 @@ Use a global exception handler to catch validation errors and DB errors, convert
    ```
    The slug is stored in the `agent_card_id` column and is **never regenerated** after creation — renaming an agent (via PUT) does NOT change its `agent_card_id`, only its `name` and `card_data`. This ensures stable IDs for subscribers.
 
-   **Multi-version semantics**: Multiple versions of the same agent can coexist (e.g., `recipe-agent` v1.0.0, v1.1.0, v2.0.0). The unique constraint is `(agent_card_id, version)`. List and search endpoints always surface only the **latest version** per agent unless the caller explicitly requests all versions via the `/versions` sub-resource.
+   **Multi-version semantics**: Multiple versions of the same agent can coexist (e.g., `recipe-agent` v1.0.0, v1.1.0, v2.0.0). The unique constraint is `(name, version)`. List and search endpoints always surface only the **latest version** per agent unless the caller explicitly requests all versions via the `/versions` sub-resource.
 
 2. **Ownership enforcement**: PUT and DELETE must verify `created_by == current_user["sub"]`. Return HTTP 403 with `OperationResponse` showing failed status if ownership doesn't match.
 
