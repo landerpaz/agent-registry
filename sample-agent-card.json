@@ -1,0 +1,345 @@
+{
+    "name": "HR Domain Agent",
+    "description": "Handles all human resources operations including leave management, payroll queries, employee onboarding, and attendance tracking",
+    "version": "2.1.0",
+    "url": "https://internal.corp/agents/hr",
+    "provider": {
+        "organization": "Enterprise HR Division",
+        "url": "https://internal.corp/hr"
+    },
+    "capabilities": {
+        "streaming": true,
+        "pushNotifications": false,
+        "stateTransitionHistory": true,
+        "extensions": [
+            {
+                "uri": "urn:enterprise:skill-schema/v1",
+                "description": "Structured input/output schemas for each skill, enabling the IS agent to perform guided slot-filling before dispatching tasks",
+                "required": false,
+                "params": {
+                    "skill_schemas": {
+                        "apply-leave": {
+                            "input_schema": {
+                                "type": "object",
+                                "required": ["leave_type", "start_date", "end_date"],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "string",
+                                        "description": "Employee ID (auto-resolved from auth context if not provided)"
+                                    },
+                                    "leave_type": {
+                                        "type": "string",
+                                        "enum": ["casual", "sick", "earned", "maternity", "paternity", "compensatory"],
+                                        "description": "Type of leave being requested"
+                                    },
+                                    "start_date": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "description": "First day of leave (YYYY-MM-DD)"
+                                    },
+                                    "end_date": {
+                                        "type": "string",
+                                        "format": "date",
+                                        "description": "Last day of leave (YYYY-MM-DD)"
+                                    },
+                                    "half_day": {
+                                        "type": "boolean",
+                                        "default": false,
+                                        "description": "Whether this is a half-day request (only valid for single-day leave)"
+                                    },
+                                    "half_day_session": {
+                                        "type": "string",
+                                        "enum": ["first_half", "second_half"],
+                                        "description": "Which half of the day (required only if half_day is true)"
+                                    },
+                                    "reason": {
+                                        "type": "string",
+                                        "maxLength": 500,
+                                        "description": "Reason for taking leave"
+                                    },
+                                    "contact_during_leave": {
+                                        "type": "string",
+                                        "description": "Emergency contact number during leave period"
+                                    }
+                                }
+                            },
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "leave_request_id": {
+                                        "type": "string",
+                                        "description": "Unique identifier for the submitted leave request"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["submitted", "auto_approved", "pending_approval", "rejected"],
+                                        "description": "Current status of the leave request"
+                                    },
+                                    "approver_name": {
+                                        "type": "string",
+                                        "description": "Name of the manager who will approve the request"
+                                    },
+                                    "days_deducted": {
+                                        "type": "number",
+                                        "description": "Number of leave days that will be deducted from balance"
+                                    },
+                                    "remaining_balance": {
+                                        "type": "object",
+                                        "properties": {
+                                            "leave_type": { "type": "string" },
+                                            "available": { "type": "number" },
+                                            "used": { "type": "number" },
+                                            "total": { "type": "number" }
+                                        },
+                                        "description": "Updated leave balance after this request"
+                                    }
+                                }
+                            }
+                        },
+
+                        "check-leave-balance": {
+                            "input_schema": {
+                                "type": "object",
+                                "required": [],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "string",
+                                        "description": "Employee ID (auto-resolved from auth context if not provided)"
+                                    },
+                                    "leave_type": {
+                                        "type": "string",
+                                        "enum": ["casual", "sick", "earned", "maternity", "paternity", "compensatory", "all"],
+                                        "default": "all",
+                                        "description": "Specific leave type to check, or 'all' for complete balance"
+                                    },
+                                    "year": {
+                                        "type": "integer",
+                                        "description": "Calendar year for balance inquiry (defaults to current year)"
+                                    }
+                                }
+                            },
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "employee_name": { "type": "string" },
+                                    "year": { "type": "integer" },
+                                    "balances": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "leave_type": { "type": "string" },
+                                                "total_entitled": { "type": "number" },
+                                                "used": { "type": "number" },
+                                                "pending": { "type": "number" },
+                                                "available": { "type": "number" },
+                                                "carry_forward": { "type": "number" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+
+                        "payslip-query": {
+                            "input_schema": {
+                                "type": "object",
+                                "required": ["month", "year"],
+                                "properties": {
+                                    "employee_id": {
+                                        "type": "string",
+                                        "description": "Employee ID (auto-resolved from auth context if not provided)"
+                                    },
+                                    "month": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 12,
+                                        "description": "Month number (1-12)"
+                                    },
+                                    "year": {
+                                        "type": "integer",
+                                        "description": "Calendar year for the payslip"
+                                    },
+                                    "include_breakdown": {
+                                        "type": "boolean",
+                                        "default": true,
+                                        "description": "Whether to include detailed earnings and deductions breakdown"
+                                    },
+                                    "download_pdf": {
+                                        "type": "boolean",
+                                        "default": false,
+                                        "description": "Whether to generate a downloadable PDF payslip"
+                                    }
+                                }
+                            },
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "payslip_id": { "type": "string" },
+                                    "pay_period": { "type": "string", "description": "e.g. March 2026" },
+                                    "pay_date": { "type": "string", "format": "date" },
+                                    "gross_salary": { "type": "number" },
+                                    "total_deductions": { "type": "number" },
+                                    "net_salary": { "type": "number" },
+                                    "earnings": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "component": { "type": "string" },
+                                                "amount": { "type": "number" }
+                                            }
+                                        }
+                                    },
+                                    "deductions": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "component": { "type": "string" },
+                                                "amount": { "type": "number" }
+                                            }
+                                        }
+                                    },
+                                    "pdf_url": {
+                                        "type": "string",
+                                        "description": "URL to download PDF (only if download_pdf was true)"
+                                    }
+                                }
+                            }
+                        },
+
+                        "onboarding-status": {
+                            "input_schema": {
+                                "type": "object",
+                                "required": ["new_hire_email"],
+                                "properties": {
+                                    "new_hire_email": {
+                                        "type": "string",
+                                        "format": "email",
+                                        "description": "Email address of the new hire"
+                                    },
+                                    "include_pending_tasks": {
+                                        "type": "boolean",
+                                        "default": true,
+                                        "description": "Whether to include list of pending onboarding tasks"
+                                    }
+                                }
+                            },
+                            "output_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "new_hire_name": { "type": "string" },
+                                    "joining_date": { "type": "string", "format": "date" },
+                                    "overall_progress": {
+                                        "type": "integer",
+                                        "description": "Percentage completion (0-100)"
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["not_started", "in_progress", "completed", "overdue"]
+                                    },
+                                    "completed_tasks": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "task_name": { "type": "string" },
+                                                "completed_date": { "type": "string", "format": "date" }
+                                            }
+                                        }
+                                    },
+                                    "pending_tasks": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "task_name": { "type": "string" },
+                                                "due_date": { "type": "string", "format": "date" },
+                                                "assigned_to": { "type": "string" },
+                                                "blocker": { "type": "string" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "security": [
+        { "bearer_auth": [] }
+    ],
+    "securitySchemes": {
+        "bearer_auth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
+        }
+    },
+    "defaultInputModes": ["text", "application/json"],
+    "defaultOutputModes": ["text", "application/json"],
+    "skills": [
+        {
+            "id": "apply-leave",
+            "name": "Apply for Leave",
+            "description": "Submit a new leave request for casual, sick, earned, maternity, paternity, or compensatory leave. Supports full-day and half-day requests with optional reason and emergency contact.",
+            "tags": ["leave", "PTO", "time-off", "vacation", "day-off", "absence"],
+            "examples": [
+                "I want to take casual leave next Friday",
+                "Apply for sick leave from March 10 to March 12",
+                "I need a half day off tomorrow afternoon",
+                "Submit earned leave for the first week of April, reason is family vacation",
+                "Can I take a day off on the 25th?"
+            ],
+            "inputModes": ["text", "application/json"],
+            "outputModes": ["text", "application/json"]
+        },
+        {
+            "id": "check-leave-balance",
+            "name": "Check Leave Balance",
+            "description": "View available leave balance for any or all leave types. Shows total entitled, used, pending, available, and carry-forward days for the requested calendar year.",
+            "tags": ["leave", "balance", "PTO", "remaining", "days-left", "quota"],
+            "examples": [
+                "How many sick days do I have left?",
+                "What's my leave balance?",
+                "Show me my remaining PTO for 2026",
+                "How many casual leaves have I used this year?",
+                "Do I have any earned leave available?"
+            ],
+            "inputModes": ["text", "application/json"],
+            "outputModes": ["text", "application/json"]
+        },
+        {
+            "id": "payslip-query",
+            "name": "Payslip Query",
+            "description": "Retrieve salary details, earnings breakdown, and tax deductions for a specific month. Can generate a downloadable PDF payslip.",
+            "tags": ["payslip", "salary", "pay", "earnings", "deductions", "tax", "paycheck"],
+            "examples": [
+                "Show me my payslip for March 2026",
+                "What were my tax deductions last month?",
+                "Download my February salary slip as PDF",
+                "How much was my gross salary in January?",
+                "Give me a breakdown of my pay for this month"
+            ],
+            "inputModes": ["text", "application/json"],
+            "outputModes": ["text", "application/json", "application/pdf"]
+        },
+        {
+            "id": "onboarding-status",
+            "name": "Onboarding Status Check",
+            "description": "Check the onboarding progress for a new hire. Shows completed and pending tasks, overall percentage, assigned owners, blockers, and due dates.",
+            "tags": ["onboarding", "new-hire", "joining", "induction", "checklist"],
+            "examples": [
+                "What's the onboarding status for john.doe@company.com?",
+                "Show me pending onboarding tasks for the new hire joining on April 20",
+                "Is the onboarding complete for sarah.smith@company.com?",
+                "Which onboarding tasks are overdue for the new team member?"
+            ],
+            "inputModes": ["text", "application/json"],
+            "outputModes": ["text", "application/json"]
+        }
+    ]
+}
